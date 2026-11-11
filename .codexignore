@@ -1,0 +1,56 @@
+# SDK downloads and generated build trees (keep buildroot-overlay source visible).
+/.git/
+/output/
+/dl/
+/linux/
+/.last_conf
+compile_commands.json*
+/buildroot-overlay/board/canaan/k230-soc/rootfs_overlay/etc/version/release_version
+/buildroot-overlay/package/ai_demo/kmodel/
+/buildroot-overlay/package/ai_demo/k230_bin/
+/buildroot-overlay/package/ai_demo/out/
+/buildroot-overlay/package/face_detect/k230_bin/
+/buildroot-overlay/package/yolo/k230_bin/
+/buildroot-overlay/package/cloudplat_deploy_code_linux/k230_bin/
+
+# Generated local dependencies and caches; tracked third-party sources stay visible.
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+GPATH
+GRTAGS
+GTAGS
+gtags.files
+
+# Compiled artifacts. Do not blanket-ignore firmware, models, artwork, or archives:
+# the SDK tracks some of these as build inputs.
+*.o
+*.a
+*.so
+*.so.*
+*.deb
+*.img
+*.img.gz
+
+# Logs and editor temporary files.
+*.log
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local secrets; retain environment templates and tracked TLS test fixtures.
+/.aws/
+.env
+.env.*
+!.env.example
+!.env.sample
+credentials.json
+secrets.json

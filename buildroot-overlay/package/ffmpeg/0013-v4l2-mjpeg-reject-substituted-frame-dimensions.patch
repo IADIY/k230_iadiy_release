@@ -1,0 +1,31 @@
+From: K230 SDK maintainers
+Subject: [PATCH] avcodec: reject substituted MJPEG frame dimensions
+
+--- a/libavcodec/v4l2_m2m_enc.c
++++ b/libavcodec/v4l2_m2m_enc.c
+@@ -420,6 +420,25 @@
+         return AVERROR(EINVAL);
+     }
+ 
++    /* MJPEG must preserve the dimensions advertised to the UVC host. */
++    if (avctx->codec_id == AV_CODEC_ID_MJPEG) {
++        unsigned int ow = V4L2_TYPE_IS_MULTIPLANAR(output->type) ?
++            output->format.fmt.pix_mp.width : output->format.fmt.pix.width;
++        unsigned int oh = V4L2_TYPE_IS_MULTIPLANAR(output->type) ?
++            output->format.fmt.pix_mp.height : output->format.fmt.pix.height;
++        unsigned int cw = V4L2_TYPE_IS_MULTIPLANAR(capture->type) ?
++            capture->format.fmt.pix_mp.width : capture->format.fmt.pix.width;
++        unsigned int ch = V4L2_TYPE_IS_MULTIPLANAR(capture->type) ?
++            capture->format.fmt.pix_mp.height : capture->format.fmt.pix.height;
++        if (ow != avctx->width || oh != avctx->height ||
++            cw != avctx->width || ch != avctx->height) {
++            av_log(avctx, AV_LOG_ERROR,
++                   "MJPEG encoder negotiated input %ux%u, output %ux%u; requested %dx%d\n",
++                   ow, oh, cw, ch, avctx->width, avctx->height);
++            return AVERROR(EINVAL);
++        }
++    }
++
+     return v4l2_prepare_encoder(s);
+ }
+ 

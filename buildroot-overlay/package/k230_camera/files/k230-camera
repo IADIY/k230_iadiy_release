@@ -1,0 +1,154 @@
+#!/bin/bash
+# Foreground owner of the UVC gadget and its capture processes.
+set -u
+
+RUN_DIR=/run/k230-camera
+GADGET_ROOT=/sys/kernel/config/usb_gadget
+VIDEO_UVC=/dev/video1
+VIDEO_LCD=/dev/video2
+HELPER=/root/app/uvc-gadget/uvc-gadget.sh
+ADB_SCRIPT=/etc/vvcam/S41adb_mtp
+[ -x "$ADB_SCRIPT" ] || ADB_SCRIPT=/etc/init.d/S41adb_mtp
+uvc_pid= lcd_pid= setup_attempted=0 restore_adb=0 cleaning=0
+
+fail() { echo "k230-camera: $*" >&2; return 1; }
+
+prerequisites() {
+    [ "$(id -u)" = 0 ] || { fail 'root is required'; return 1; }
+    local cmd help
+    for cmd in flock setsid timeout systemctl uvc-gadget; do
+        command -v "$cmd" >/dev/null 2>&1 || { fail "missing $cmd"; return 1; }
+    done
+    systemctl is-active --quiet vvcam.service || { fail 'vvcam.service is not active'; return 1; }
+    [ -c "$VIDEO_UVC" ] || { fail "$VIDEO_UVC is unavailable"; return 1; }
+    [ -x "$HELPER" ] || { fail "missing gadget helper $HELPER"; return 1; }
+    help=$(uvc-gadget -h 2>&1 || :)
+    [[ "$help" =~ (^|[[:space:],])\-v([[:space:],=]|$) ]] || { fail 'uvc-gadget lacks -v support'; return 1; }
+}
+
+check_usb() {
+    local gadget bound
+    [ ! -e "$GADGET_ROOT/uvc_g1" ] || { fail 'UVC gadget already exists'; return 1; }
+    for gadget in "$GADGET_ROOT"/*; do
+        [ -d "$gadget" ] || continue
+        bound=$(cat "$gadget/UDC" 9>&- 2>/dev/null || :)
+        [ -n "$bound" ] || continue
+        if [ "$gadget" = "$GADGET_ROOT/g1" ] && [ "$bound" = 91500000.usb ]; then
+            [ -x "$ADB_SCRIPT" ] || { fail 'ADB/MTP stop helper is missing'; return 1; }
+            restore_adb=1
+        else
+            fail "USB gadget $gadget is already bound to $bound"; return 1
+        fi
+    done
+    if command -v pgrep >/dev/null 2>&1 && pgrep -x uvc-gadget 9>&- >/dev/null 2>&1; then
+        fail 'uvc-gadget is already running'; return 1
+    fi
+    if command -v fuser >/dev/null 2>&1 && fuser "$VIDEO_UVC" 9>&- >/dev/null 2>&1; then
+        fail "$VIDEO_UVC is already in use"; return 1
+    fi
+}
+
+stop_group() {
+    local pid=$1 i
+    [ -n "$pid" ] || return 0
+    kill -TERM -- "-$pid" 2>/dev/null || :
+    for ((i=0; i<20; i++)); do
+        kill -0 -- "-$pid" 2>/dev/null || break
+        sleep 0.1 9>&-
+    done
+    kill -KILL -- "-$pid" 2>/dev/null || :
+    wait "$pid" 2>/dev/null || :
+}
+
+cleanup() {
+    [ "$cleaning" = 0 ] || return
+    cleaning=1
+    trap '' INT TERM
+    stop_group "$uvc_pid"
+    stop_group "$lcd_pid"
+    if [ "$setup_attempted" = 1 ]; then
+        timeout -k 2 15 "$HELPER" cleanup 9>&- >>"$RUN_DIR/gadget.log" 2>&1 || echo 'k230-camera: gadget cleanup failed' >&2
+    fi
+    if [ "$restore_adb" = 1 ]; then
+        if timeout -k 2 15 "$ADB_SCRIPT" start 9>&- >>"$RUN_DIR/gadget.log" 2>&1; then
+            local i bound=
+            for ((i=0; i<50; i++)); do
+                bound=$(cat "$GADGET_ROOT/g1/UDC" 9>&- 2>/dev/null || :)
+                [ "$bound" = 91500000.usb ] && break
+                sleep 0.1 9>&-
+            done
+            [ "$bound" = 91500000.usb ] || echo 'k230-camera: ADB/MTP controller was not rebound' >&2
+        else
+            echo 'k230-camera: ADB/MTP restore failed' >&2
+        fi
+    fi
+}
+
+main() {
+    local lcd=1 arg i bound setup_status
+    for arg in "$@"; do
+        case "$arg" in
+            --help) echo 'Usage: k230-camera [--no-lcd] [--help]'; return 0 ;;
+            --no-lcd) lcd=0 ;;
+            *) fail "unknown argument: $arg"; return 2 ;;
+        esac
+    done
+    prerequisites || return 1
+    mkdir -p "$RUN_DIR" || return 1
+    exec 9>"$RUN_DIR/lock" || return 1
+    flock -n 9 || { fail 'another instance is running'; return 1; }
+    check_usb || return 1
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if [ "$restore_adb" = 1 ]; then
+        timeout -k 2 15 "$ADB_SCRIPT" stop 9>&- >>"$RUN_DIR/gadget.log" 2>&1 || { fail 'ADB/MTP stop failed'; return 1; }
+        for ((i=0; i<50; i++)); do
+            bound=$(cat "$GADGET_ROOT/g1/UDC" 9>&- 2>/dev/null || :)
+            [ -z "$bound" ] && break
+            sleep 0.1 9>&-
+        done
+        [ -z "$bound" ] || { fail 'ADB/MTP gadget did not release the controller'; return 1; }
+    fi
+    setup_attempted=1
+    timeout -k 2 30 "$HELPER" start-managed 9>&- >>"$RUN_DIR/gadget.log" 2>&1
+    setup_status=$?
+    if [ "$setup_status" -ne 0 ]; then
+        # Status 75 means the helper did not acquire ownership of the gadget.
+        [ "$setup_status" -ne 75 ] || setup_attempted=0
+        fail 'gadget setup failed'
+        return 1
+    fi
+    echo "k230-camera: logs: $RUN_DIR/{uvc,lcd,gadget}.log" >&2
+    if [ "$lcd" = 1 ]; then
+        if command -v v4l2-drm >/dev/null 2>&1 && [ -c "$VIDEO_LCD" ]; then
+            setsid v4l2-drm -d 2 -n 5 -w 800 -h 480 -f NV12 --rotation 1 9>&- >>"$RUN_DIR/lcd.log" 2>&1 &
+            lcd_pid=$!
+            echo "k230-camera: LCD preview started (pid $lcd_pid)" >&2
+        else
+            echo 'k230-camera: LCD preview unavailable; continuing with UVC' >&2
+        fi
+    fi
+    while :; do
+        setsid uvc-gadget -v "$VIDEO_UVC" uvc.usb0 9>&- >>"$RUN_DIR/uvc.log" 2>&1 &
+        uvc_pid=$!
+        echo "k230-camera: UVC started (pid $uvc_pid)" >&2
+        if [ -n "$lcd_pid" ]; then
+            wait -n "$uvc_pid" "$lcd_pid" 2>/dev/null || :
+            if ! kill -0 "$lcd_pid" 2>/dev/null; then
+                stop_group "$lcd_pid"
+                lcd_pid=
+                echo 'k230-camera: LCD preview exited; continuing with UVC' >&2
+            fi
+        fi
+        wait "$uvc_pid" 2>/dev/null || :
+        stop_group "$uvc_pid"
+        uvc_pid=
+        echo 'k230-camera: UVC exited; retrying in 3 seconds' >&2
+        sleep 3 9>&- &
+        wait $! || :
+    done
+}
+
+# Sourcing exposes functions for isolated tests without permitting path overrides in production.
+if [[ ${BASH_SOURCE[0]} = "$0" ]]; then main "$@"; fi

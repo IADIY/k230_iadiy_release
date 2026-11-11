@@ -1,0 +1,25 @@
+Subject: [PATCH] vpu: retain all encoded frames
+
+Remove the vendor periodic frame discard to preserve steady-state frame rate.
+
+--- a/lib/vpu-source.c
++++ b/lib/vpu-source.c
+@@ -417,18 +417,6 @@
+ 				break;
+ 			}
+ 			pkt_count++;
+-
+-			// Skip every 4th frame to reduce UVC driver buffering delay
+-			if(pkt_count%28==0){
+-				av_packet_free(&src->pkt);
+-				src->pkt = av_packet_alloc();
+-				continue;
+-			}
+-			// if(pkt_count < 10){
+-			// 	av_packet_free(&src->pkt);
+-			// 	src->pkt = av_packet_alloc();
+-			// 	continue;
+-			// }
+ 
+ 
+ 			// if( (frame_count %101 == 0)|| frame_count <5 )

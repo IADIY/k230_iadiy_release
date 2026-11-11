@@ -1,0 +1,37 @@
+Subject: [PATCH] avdevice: allow bounded V4L2 capture buffer requests
+
+--- a/libavdevice/v4l2.c
++++ b/libavdevice/v4l2.c
+@@ -39,7 +39,6 @@
+ #include <libv4l2.h>
+ #endif
+ 
+-static const int desired_video_buffers = 256;
+ 
+ #define V4L_ALLFORMATS  3
+ #define V4L_RAWFORMATS  1
+@@ -83,6 +82,7 @@
+     enum v4l2_buf_type buf_type;
+ 
+     int buffers;
++    int requested_buffers;
+     atomic_int buffers_queued;
+     void **buf_start;
+     unsigned int *buf_len;
+@@ -362,7 +362,7 @@
+     struct video_data *s = ctx->priv_data;
+     struct v4l2_requestbuffers req = {
+         .type   = s->buf_type,
+-        .count  = desired_video_buffers,
++        .count  = s->requested_buffers,
+         .memory = V4L2_MEMORY_MMAP
+     };
+ 
+@@ -1209,6 +1209,7 @@
+ #define DEC AV_OPT_FLAG_DECODING_PARAM
+ 
+ static const AVOption options[] = {
++    { "video_buffers", "number of raw capture buffers to request", OFFSET(requested_buffers), AV_OPT_TYPE_INT, {.i64 = 256}, 2, 256, DEC },
+     { "standard",     "set TV standard, used only by analog frame grabber",       OFFSET(standard),     AV_OPT_TYPE_STRING, {.str = NULL }, 0, 0,       DEC },
+     { "channel",      "set TV channel, used only by frame grabber",               OFFSET(channel),      AV_OPT_TYPE_INT,    {.i64 = -1 },  -1, INT_MAX, DEC },
+     { "video_size",   "set frame size",                                           OFFSET(width),        AV_OPT_TYPE_IMAGE_SIZE, {.str = NULL},  0, 0,   DEC },

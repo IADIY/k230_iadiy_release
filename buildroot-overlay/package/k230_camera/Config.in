@@ -1,0 +1,17 @@
+config BR2_PACKAGE_K230_CAMERA
+	bool "k230-camera"
+	depends on BR2_USE_MMU
+	depends on BR2_USE_WCHAR
+	depends on BR2_PACKAGE_BUSYBOX_SHOW_OTHERS
+	depends on BR2_PACKAGE_VVCAM
+	depends on BR2_PACKAGE_VVCAM_DEF_SENSOR = "imx335"
+	depends on BR2_PACKAGE_FFMPEG
+	select BR2_PACKAGE_UVC_GADGET
+	select BR2_PACKAGE_BASH
+	select BR2_PACKAGE_COREUTILS
+	select BR2_PACKAGE_UTIL_LINUX
+	select BR2_PACKAGE_UTIL_LINUX_BINARIES
+	help
+	  Manually run the IMX335 USB camera with an optional LCD preview.
+	  Requires the IMX335 VVCAM configuration and FFmpeg for encoding.
+	  No boot service is installed.

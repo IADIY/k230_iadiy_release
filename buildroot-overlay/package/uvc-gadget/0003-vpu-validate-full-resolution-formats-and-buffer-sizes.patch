@@ -1,0 +1,103 @@
+Subject: [PATCH] vpu: validate full-resolution capture and buffer sizing
+
+--- a/lib/vpu-source.c
++++ b/lib/vpu-source.c
+@@ -9,6 +9,8 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#include <limits.h>
++#include <stdint.h>
+ #include <pthread.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -90,11 +92,24 @@
+ 	/* Width and height set via set_format */
+ 	int set_width;
+ 	int set_height;
++	uint32_t max_frame_size;
+ 	/* Initialize flag */
+ 	int initialized;
+ };
+ 
+ #define to_vpu_source(s) container_of(s, struct vpu_source, src)
++
++/* Keep source and UVC descriptor capacities consistent without integer overflow. */
++static int mjpeg_frame_capacity(uint32_t width, uint32_t height, uint32_t *capacity)
++{
++	uint64_t pixels = (uint64_t)width * height;
++
++	if (!width || !height || (width & 1) || (height & 1) ||
++	    width > INT_MAX || height > INT_MAX || pixels > UINT32_MAX / 2)
++		return -EINVAL;
++	*capacity = (uint32_t)(pixels * 2);
++	return 0;
++}
+ 
+ static int init_camera(struct vpu_source *src, const char *camera_device, int width, int height)
+ {
+@@ -118,6 +133,8 @@
+ 	av_dict_set(&options, "pixel_format", "nv12", 0);
+ 	av_dict_set(&options, "probesize", "32", 0);
+ 	av_dict_set(&options, "video_size", video_size, 0);
++	/* Five full-resolution NV12 buffers use about 38 MB, rather than 256 frames. */
++	av_dict_set_int(&options, "video_buffers", 5, 0);
+ 	/* Minimal buffer for low latency - just 1 frame worth */
+ 	av_dict_set_int(&options, "buffer_size", 4096, 0);
+ 	av_dict_set_int(&options, "input_queue_size", 1, 0);
+@@ -131,6 +148,16 @@
+ 		return -1;
+ 	}
+ 	av_dict_free(&options);
++
++	/* Reject driver substitutions before probing or feeding the encoder. */
++	if (src->fmt_ctx->nb_streams != 1 ||
++	    src->fmt_ctx->streams[0]->codecpar->width != width ||
++	    src->fmt_ctx->streams[0]->codecpar->height != height ||
++	    src->fmt_ctx->streams[0]->codecpar->format != AV_PIX_FMT_NV12) {
++		fprintf(stderr, "Camera did not negotiate requested %dx%d NV12\n", width, height);
++		avformat_close_input(&src->fmt_ctx);
++		return -EINVAL;
++	}
+ 
+ 	if (avformat_find_stream_info(src->fmt_ctx, NULL) < 0) {
+ 		fprintf(stderr, "Cannot find stream info\n");
+@@ -498,6 +525,12 @@
+ 	struct vpu_source *src = to_vpu_source(s);
+ 	int ret;
+ 
++	ret = mjpeg_frame_capacity(fmt->width, fmt->height, &src->max_frame_size);
++	if (ret < 0) {
++		fprintf(stderr, "Invalid MJPEG dimensions %ux%u\n", fmt->width, fmt->height);
++		return ret;
++	}
++
+ 	/* Store width, height and frame rate from format/set_frame_rate */
+ 	src->set_width = fmt->width;
+ 	src->set_height = fmt->height;
+@@ -510,6 +543,7 @@
+ 	    src->set_height != src->codec_ctx->height) {
+ 		/* Cleanup existing resources if already initialized */
+ 		if (src->initialized) {
++			src->initialized = 0;
+ 			avcodec_free_context(&src->codec_ctx);
+ 			av_frame_free(&src->frame);
+ 			av_packet_free(&src->pkt);
+@@ -528,7 +562,7 @@
+ 		}
+ 		src->initialized = 1;
+ 	}
+-	fmt->sizeimage = (src->set_width * src->set_height * 2); /* MJPEG: ~2 bytes per pixel */
++	fmt->sizeimage = src->max_frame_size;
+ 
+ 	return 0;
+ }
+@@ -577,7 +611,7 @@
+ 
+ 	/* Buffer memory will be provided by sink via import_buffers */
+ 	for (unsigned int i = 0; i < nbufs; i++) {
+-		src->output_buffers->buffers[i].size = 1024 * 1024;
++		src->output_buffers->buffers[i].size = src->max_frame_size;
+ 		src->output_buffers->buffers[i].mem = NULL;
+ 		src->output_buffers->buffers[i].dmabuf = -1;
+ 	}
